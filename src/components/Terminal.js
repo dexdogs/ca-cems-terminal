@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useMemo, useRef } from 'react';
+import { Treemap, ResponsiveContainer, Tooltip } from 'recharts';
 import { FACILITIES } from '@/data/facilities';
 
 const TOTAL_COUNT = FACILITIES.length;
@@ -74,7 +75,7 @@ const UPLOAD_FIELDS = [
   { key: 'naics', label: 'NAICS Code', required: true, hint: '6-digit' },
   { key: 'total_co2e_mt', label: 'Total CO2e (MT/yr)', required: true, hint: 'Annual metric tons' },
   { key: 'ghg_method', label: 'GHG Reporting Method', required: true, hint: 'Tier 1-4 or Mixed' },
-  { key: 'cems_params', label: 'CEMS Parameters', required: true, hint: 'Semicolon-separated: NOx;SOx;CO2' },
+  { key: 'cems_params', label: 'Continuous Emissions Monitoring Systems Parameters', required: true, hint: 'Semicolon-separated: NOx;SOx;CO2' },
   { key: 'regulatory_programs', label: 'Regulatory Programs', required: true, hint: 'Semicolon-separated' },
   { key: 'unit_total', label: 'Total Combustion Units', required: false, hint: '' },
   { key: 'unit_cems', label: 'Units with CEMS', required: false, hint: '' },
@@ -88,6 +89,7 @@ export default function Terminal() {
   const [source, setSource] = useState('ALL');
   const [minConf, setMinConf] = useState(1);
   const [search, setSearch] = useState('');
+  const [cemsOnly, setCemsOnly] = useState(false);
   const [sortCol, setSortCol] = useState('e');
   const [sortDir, setSortDir] = useState('desc');
   const [selected, setSelected] = useState(null);
@@ -97,8 +99,12 @@ export default function Terminal() {
   const fileRef = useRef(null);
 
   const allFacilities = useMemo(() => {
-    const uploaded = uploadData.map(u => ({ ...u, ds: ['USER'], cf: 0, gcf: false, ir: false, im: false }));
-    return [...FACILITIES, ...uploaded];
+    const clean = FACILITIES.map(f => ({
+      ...f,
+      n: f.n.replace('CALI FORNIA', 'CALIFORNIA'),
+      cf: (f.rp||[]).join().includes('Tier 4') ? 3 : (f.ds||[]).length > 1 ? 2 : 1
+    }));
+    return [...clean, ...uploadData.map(u => ({ ...u, ds: ['USER'], cf: 0 }))];
   }, [uploadData]);
 
   const filtered = useMemo(() => {
@@ -108,6 +114,7 @@ export default function Terminal() {
     if (method !== 'ALL') d = d.filter(f => f.m === method);
     if (source !== 'ALL') d = d.filter(f => f.ds.includes(source));
     if (minConf > 1) d = d.filter(f => f.cf >= minConf);
+    if (cemsOnly) d = d.filter(f => f.m.includes('CEMS') || f.m.includes('Tier 4'));
     if (search) {
       const q = search.toUpperCase();
       d = d.filter(f => f.n.toUpperCase().includes(q) || f.c.toUpperCase().includes(q) || f.co.toUpperCase().includes(q) || f.s.toUpperCase().includes(q));
@@ -125,8 +132,34 @@ export default function Terminal() {
       return sortDir === 'asc' ? String(av).localeCompare(String(bv)) : String(bv).localeCompare(String(av));
     });
     return d;
-  }, [allFacilities, sector, param, method, source, minConf, search, sortCol, sortDir]);
+  }, [allFacilities, sector, param, method, source, minConf, search, sortCol, sortDir, cemsOnly]);
 
+  const treeData = useMemo(() => Object.values(filtered.reduce((acc, f) => {
+    if (!acc[f.s]) acc[f.s] = { name: f.s, children: [] };
+    acc[f.s].children.push({ name: f.n, size: Math.max(f.e, 5000), actual: f.e, cf: f.cf });
+    return acc;
+  }, {})), [filtered]);
+
+  const CustomNode = ({ x, y, width, height, name, cf, depth }) => (
+    <g>
+      <rect x={x} y={y} width={width} height={height} fill={depth===1 ? '#111' : cf===3 ? '#22c55e' : cf===2 ? '#ff8c00' : '#444'} stroke="#000" />
+      {width > 40 && height > 20 && depth === 2 && <text x={x+4} y={y+14} fill="#fff" fontSize={9}>{name.substring(0,12)}</text>}
+    </g>
+  );
+
+  const CustomTooltip = ({ active, payload }) => {
+    if (active && payload && payload.length) {
+      const d = payload[0].payload;
+      if (d.depth === 1) return <div className="bg-[#000] border border-[#ff8c00] p-1 text-[11px] text-[#ff8c00]">{d.name}</div>;
+      return (
+        <div className="bg-[#000] border border-[#333] p-2 text-[10px] z-50">
+          <div className="text-[#ff8c00] font-bold">{d.name}</div>
+          <div className="text-[#ccc]">{d.actual > 0 ? Number(d.actual).toLocaleString() + ' MT' : 'Not Reported'}</div>
+        </div>
+      );
+    }
+    return null;
+  };
   const stats = useMemo(() => ({
     count: filtered.length,
     emissions: filtered.reduce((s, f) => s + f.e, 0),
@@ -139,7 +172,7 @@ export default function Terminal() {
   const arrow = (col) => sortCol === col ? (sortDir === 'asc' ? ' \u2191' : ' \u2193') : '';
 
   const exportCSV = () => {
-    const h = ['Name','Sector','City','County','NAICS','Total CO2e (MT)','GHG Method','CEMS Params','Regulatory Programs','Confidence','Data Sources','GHGRP ID','SCAQMD ID'];
+    const h = ['Name','Sector','City','County','NAICS','Total CO2e (MT)','Greenhouse Gas Method','CEMS Params','Regulatory Programs','Confidence','Data Sources','Greenhouse Gas Reporting Program (GHGRP) ID','South Coast Air Quality Management District (SCAQMD) ID'];
     const rows = filtered.map(f => [f.n, f.s, f.c, f.co, f.na, f.e, f.m, f.cp.join(';'), f.rp.join(';'), f.cf, f.ds.join(';'), f.id||'', f.sid||'']);
     const csv = [h, ...rows].map(r => r.map(v => '"'+v+'"').join(',')).join('\n');
     const blob = new Blob([csv], { type: 'text/csv' }); const url = URL.createObjectURL(blob);
@@ -195,6 +228,10 @@ export default function Terminal() {
       <FilterSelect label="CEMS Parameter" value={param} onChange={setParam} options={PARAMS} />
       <FilterSelect label="GHG Method" value={method} onChange={setMethod} options={METHODS} />
       <FilterSelect label="Data Source" value={source} onChange={setSource} options={DATA_SOURCES} />
+      <label className="flex items-center gap-2 mb-4 p-2 bg-[#1a1800] border border-[#ff8c00]/30 cursor-pointer hover:bg-[#2a2800] transition-colors">
+        <input type="checkbox" checked={cemsOnly} onChange={e => setCemsOnly(e.target.checked)} className="accent-[#ff8c00]" />
+        <span className="text-[10px] text-[#ff8c00] font-bold uppercase tracking-wider">Reality Toggle: Continuous Emissions Monitoring Systems Only</span>
+      </label>
       <FilterSelect label="Min Confidence" value={String(minConf)} onChange={v => setMinConf(Number(v))} options={['1','2','3']} allLabel="1+ (All)" />
       <div className="mt-4 pt-3 border-t border-[#1a1a1a]">
         <div className="text-[8px] text-[#444] uppercase tracking-[1.5px] mb-2">Query Results</div>
@@ -221,17 +258,17 @@ export default function Terminal() {
       <div className="flex items-center justify-between px-3 py-1.5 bg-[#111] border-b border-[#1a1a1a] shrink-0">
         <div className="flex items-center gap-2">
           <button onClick={() => setMobileFilters(!mobileFilters)} className="lg:hidden text-[#ff8c00] bg-[#1a1a1a] border border-[#2a2a2a] px-2 py-0.5 text-[11px] cursor-pointer">{mobileFilters ? '\u2715' : '\u2630'}</button>
-          <span className="text-[#ff8c00] font-bold text-[12px] sm:text-[13px] tracking-wider">CA CEMS DB</span>
+          <span className="text-[#ff8c00] font-bold text-[12px] sm:text-[13px] tracking-wider">California Continuous Emissions Monitoring Systems Database</span>
           <span className="text-[9px] text-[#666] bg-[#1a1a1a] border border-[#2a2a2a] px-2 py-0.5 hidden sm:inline">v2.0</span>
         </div>
         <div className="flex items-center gap-1 sm:gap-2">
-          {[['data','DATA'],['upload','\u2191 UPLOAD'],['info','INFO']].map(([tab, label]) => (
+          {[['data','DATA'],['viz','TREEMAP'],['upload','\u2191 UPLOAD'],['info','INFO']].map(([tab, label]) => (
             <button key={tab} onClick={() => { setActiveTab(tab); setSelected(null); }}
               className={`text-[9px] sm:text-[10px] border px-2 sm:px-3 py-1 tracking-wider uppercase cursor-pointer transition-colors ${activeTab === tab ? 'text-[#ff8c00] border-[#ff8c00] bg-[#1a1800]' : 'text-[#666] border-[#2a2a2a] bg-[#1a1a1a] hover:bg-[#222]'}`}>
               {label}
             </button>
           ))}
-          <button onClick={exportCSV} className="text-[9px] sm:text-[10px] text-[#ff8c00] bg-[#1a1a1a] border border-[#2a2a2a] px-2 sm:px-3 py-1 tracking-wider uppercase hover:bg-[#222] transition-colors cursor-pointer hidden sm:inline">CSV \u2193</button>
+          <button onClick={exportCSV} className="text-[9px] sm:text-[10px] text-[#ff8c00] bg-[#1a1a1a] border border-[#2a2a2a] px-2 sm:px-3 py-1 tracking-wider uppercase hover:bg-[#222] transition-colors cursor-pointer hidden sm:inline">CSV EXPORT</button>
         </div>
       </div>
 
@@ -264,7 +301,7 @@ export default function Terminal() {
               <table className="w-full">
                 <thead>
                   <tr>
-                    {[['cf','CONF','w-[50px]',true],['n','FACILITY','min-w-[160px]',true],['s','SECTOR','min-w-[100px] hidden sm:table-cell',true],['e','CO2e (MT)','w-[100px] text-right',true],['m_','METHOD','w-[140px] hidden xl:table-cell',false],['cp_','CEMS','w-[130px] hidden lg:table-cell',false],['ds_','SRC','w-[100px] hidden sm:table-cell',false]].map(([col,label,cls,sortable]) => (
+                    {[['cf','Confidence','w-[50px]',true],['n','FACILITY','min-w-[160px]',true],['s','SECTOR','min-w-[100px] hidden sm:table-cell',true],['e','CO2e (MT)','w-[100px] text-right',true],['m_','METHOD','w-[140px] hidden xl:table-cell',false],['cp_','Continuous Emissions Monitoring Systems','w-[130px] hidden lg:table-cell',false],['ds_','Source','w-[100px] hidden sm:table-cell',false]].map(([col,label,cls,sortable]) => (
                       <th key={col} onClick={() => sortable && handleSort(col)}
                         className={`sticky top-0 z-10 bg-[#0f0f0f] text-[#ff8c00] font-semibold text-[9px] sm:text-[10px] uppercase tracking-wider px-2 py-1.5 border-b border-[#2a2a2a] text-left whitespace-nowrap ${cls} ${sortable ? 'cursor-pointer hover:text-white select-none' : ''}`}>
                         {label}{sortable ? arrow(col) : ''}
@@ -328,7 +365,21 @@ export default function Terminal() {
           </>
         )}
 
-        {/* UPLOAD TAB */}
+        {/* VIZ TAB */}
+{activeTab === 'viz' && (
+    <div className="flex-1 p-4"><h2 className="text-[#ff8c00] text-[12px] uppercase mb-2">Emissions Treemap (Green=CEMS, Orange=Tier 1-3)</h2>
+    <ResponsiveContainer width="100%" height="90%">
+      <Treemap data={treeData} dataKey="size" content={<CustomNode />} onClick={(e) => {
+          if (e && e.name && e.depth === 2) {
+            const idx = filtered.findIndex(f => f.n === e.name);
+            if (idx !== -1) { setSelected(idx); setActiveTab('data'); }
+          }
+        }}>
+        <Tooltip content={<CustomTooltip />} />
+      </Treemap>
+    </ResponsiveContainer></div>
+  )}
+{/* UPLOAD TAB */}
         {activeTab === 'upload' && (
           <div className="flex-1 overflow-y-auto p-4 sm:p-8 max-w-3xl">
             <h2 className="text-[#ff8c00] font-bold text-[15px] tracking-wider uppercase mb-1">Upload Facility Data</h2>
@@ -374,16 +425,16 @@ export default function Terminal() {
         {activeTab === 'info' && (
           <div className="flex-1 overflow-y-auto p-4 sm:p-8 max-w-3xl">
             <h2 className="text-[#ff8c00] font-bold text-[15px] tracking-wider uppercase mb-1">About This Database</h2>
-            <p className="text-[#888] text-[11px] mb-6 leading-relaxed">The first cross-referenced database of California industrial facilities operating Continuous Emissions Monitoring Systems (CEMS), built from three independent public data sources.</p>
+            <p className="text-[#888] text-[11px] mb-6 leading-relaxed">The cross-referenced database of California industrial facilities operating Continuous Emissions Monitoring Systems (CEMS), built from three independent public data sources.</p>
 
             <div className="border border-[#1a1a1a] bg-[#0d0d0d] mb-6">
               <div className="px-4 py-2 border-b border-[#1a1a1a] text-[10px] text-[#ff8c00] font-bold uppercase tracking-wider">Methodology</div>
               <div className="p-4 text-[11px] text-[#888] leading-relaxed space-y-3">
                 <p>Facilities identified by cross-referencing three public datasets. Each receives a <span className="text-[#ff8c00]">confidence score (1{'\u2013'}3)</span> based on independent source confirmations.</p>
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 my-4">
-                  {[['Layer 1: EPA GHGRP','#3b82f6','32 CA facilities','Unit-level data identifies Tier 4 (CEMS) vs Tier 1-3 (calculation). Facility-level CEMS flag provides confirmation.'],
-                    ['Layer 2: SCAQMD RECLAIM','#a855f7','214 facilities','276 PDFs parsed for names/IDs. All RECLAIM major sources required to operate NOx CEMS and report daily.'],
-                    ['Layer 3: CARB MRR','#22c55e','55 cross-matched','CA threshold 10K MT CO2e (lower than federal 25K). Third-party verified. Cap-and-Trade coverage.']
+                  {[['Layer 1: Environmental Protection Agency (EPA) Greenhouse Gas Reporting Program (GHGRP)','#3b82f6','32 CA facilities','Unit-level data identifies Tier 4 (CEMS) vs Tier 1-3 (calculation). Facility-level CEMS flag provides confirmation.'],
+                    ['Layer 2: South Coast Air Quality Management District (SCAQMD) RECLAIM','#a855f7','214 facilities','276 PDFs parsed for names/IDs. All RECLAIM major sources required to operate NOx CEMS and report daily.'],
+                    ['Layer 3: California Air Resources Board (CARB) Mandatory Reporting Regulation (MRR)','#22c55e','55 cross-matched','CA threshold 10K MT CO2e (lower than federal 25K). Third-party verified. Cap-and-Trade coverage.']
                   ].map(([title,color,count,desc]) => (
                     <div key={title} className="p-3 border border-[#1a1a1a]">
                       <div className="text-[10px] font-bold mb-0.5" style={{color}}>{title}</div>
@@ -424,7 +475,7 @@ export default function Terminal() {
             </div>
 
             <div className="text-[10px] text-[#333] leading-relaxed">
-              Built by <a href="https://dexdogs.com" target="_blank" rel="noopener noreferrer" className="text-[#555] hover:text-[#888]">dexdogs</a>. Public data sources. March 2025.
+              Built by <a href="https://dexdogs.com" target="_blank" rel="noopener noreferrer" className="text-[#555] hover:text-[#888]">dexdogs</a>. Public data sources. 2026.
             </div>
           </div>
         )}
@@ -433,8 +484,8 @@ export default function Terminal() {
       {/* BOTTOM BAR */}
       <div className="flex items-center gap-2 sm:gap-4 px-3 py-1 bg-[#111] border-t border-[#1a1a1a] text-[10px] shrink-0">
         <span><span className="text-[#666]">SHOW </span><span className="text-[#ff8c00] font-bold">{stats.count}</span><span className="text-[#666]">/{TOTAL_COUNT}</span></span>
-        <span className="hidden sm:inline"><span className="text-[#666]">CO2e: </span><span className="text-[#ff8c00] font-bold">{fmt(stats.emissions)}</span></span>
-        <span className="hidden md:inline"><span className="text-[#666]">CO2 CEMS: </span><span className="text-[#ff8c00] font-bold">{stats.withCO2}</span></span>
+        <span className="hidden sm:inline"><span className="text-[#666]">Carbon Dioxide Equivalent: </span><span className="text-[#ff8c00] font-bold">{fmt(stats.emissions)}</span></span>
+        <span className="hidden md:inline"><span className="text-[#666]">CO2 Continuous Emissions Monitoring Systems: </span><span className="text-[#ff8c00] font-bold">{stats.withCO2}</span></span>
         {uploadData.length > 0 && <span className="hidden sm:inline"><span className="text-[#666]">USER: </span><span className="text-[#22c55e] font-bold">{uploadData.length}</span></span>}
         <span className="ml-auto text-[#222] hidden lg:inline">EPA GHGRP 2023 {'\u00B7'} CARB MRR 2024 {'\u00B7'} SCAQMD RECLAIM 2025</span>
       </div>
