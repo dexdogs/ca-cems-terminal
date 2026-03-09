@@ -17,31 +17,6 @@ A Bloomberg terminal-style explorer for California's industrial Continuous Emiss
 
 Each facility gets a **confidence score** (1-3) based on how many independent sources confirm CEMS presence.
 
-## Quick Start
-
-```bash
-npm install
-npm run dev
-```
-
-Open [http://localhost:3000](http://localhost:3000).
-
-## Deploy to Vercel
-
-```bash
-# Push to GitHub, then:
-# 1. Go to vercel.com/new
-# 2. Import your GitHub repo
-# 3. Deploy (zero config)
-```
-
-## Tech Stack
-
-- Next.js 14 (App Router)
-- Tailwind CSS
-- JetBrains Mono font
-- Static dataset embedded (no backend)
-
 ## Dataset Schema
 
 Each facility record contains:
